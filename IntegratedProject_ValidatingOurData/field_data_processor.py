@@ -20,7 +20,7 @@ class FieldDataProcessor:
         self.sql_query = config_params['sql_query']
         self.columns_to_rename = config_params['columns_to_rename']
         self.values_to_rename = config_params['values_to_rename']
-        self.weather_map_data = config_params['weather_map_data']
+        self.weather_map_data = config_params['weather_mapping_csv']
 
         self.initialize_logging(logging_level)
 
@@ -77,63 +77,69 @@ class FieldDataProcessor:
         """
         Renames specified columns in the DataFrame.
 
-        This method swaps the column names according to the
-        configuration provided.
+        This method swaps the column names 'Annual_yield' and 'Crop_type' in the DataFrame.
         """
-        # Extract the columns to rename from the configuration
-        column1, column2 = list(self.columns_to_rename.keys())[0], \
-            list(self.columns_to_rename.values())[0]
+        if 'Annual_yield' in self.df.columns and 'Crop_type' in self.df.columns:
+            # Rename 'Annual_yield' to temporary name
+            self.df.rename(columns={'Annual_yield': 'Crop_type_Temp'}, inplace=True)
+            # Rename 'Crop_type' to 'Annual_yield'
+            self.df.rename(columns={'Crop_type': 'Annual_yield'}, inplace=True)
+            # Rename 'Crop_type_Temp' to 'Crop_type'
+            self.df.rename(columns={'Crop_type_Temp': 'Crop_type'}, inplace=True)
+            self.logger.info("Swapped columns: 'Annual_yield' with 'Crop_type'")
+        else:
+            self.logger.warning("Columns 'Annual_yield' and 'Crop_type' not found in DataFrame.")
 
-        # Temporarily rename one of the columns to avoid a naming conflict
-        temp_name = "__temp_name_for_swap__"
-        while temp_name in self.df.columns:
-            temp_name += "_"
-
-        # Perform the swap
-        self.df = self.df.rename(columns={column1: temp_name,
-                                          column2: column1})
-        self.df = self.df.rename(columns={temp_name: column2})
-
-        # Log the column name swap
-        self.logger.info(f"Swapped columns: {column1} with {column2}")
-
-    def apply_corrections(self, column_name='Crop_type',
-                          abs_column='Elevation'):
+    def apply_corrections(self, column_name='Crop_type', abs_column='Elevation'):
         """
         Applies corrections to specified columns in the DataFrame.
 
-        This method performs corrections such as taking absolute values and
-        replacing values based on a mapping.
+        This method takes the absolute values for the specified column and applies
+        corrections to the specified column using a predefined function.
 
         Parameters:
-        - column_name (str): The name of the column to apply corrections to.
-        Defaults to 'Crop_type'.
-        - abs_column (str): The name of the column where absolute values
-        should be taken. Defaults to 'Elevation'.
+        - column_name (str): The name of the column to apply corrections to. Defaults to 'Crop_type'.
+        - abs_column (str): The name of the column where absolute values should be taken. Defaults to 'Elevation'.
         """
         # Take absolute values for the specified column
-        self.df[abs_column] = self.df[abs_column].abs()
+        if abs_column in self.df.columns:
+            self.df[abs_column] = self.df[abs_column].abs()
+            self.logger.info(f"Took absolute values for '{abs_column}' column.")
+        else:
+            self.logger.warning(f"Column '{abs_column}' not found in DataFrame.")
 
-        # Apply value replacements based on the mapping
-        self.df[column_name] = self.df[column_name]\
-            .apply(lambda crop: self.values_to_rename.get(crop, crop))
+        # Define the correction function for the Crop_type column
+        def correct_crop_type(crop):
+            crop = crop.strip()  # Remove trailing spaces
+            corrections = {
+                'cassaval': 'cassava',
+                'wheatn': 'wheat',
+                'teaa': 'tea'
+            }
+            return corrections.get(crop, crop)  # Get the corrected crop type, or return the original if not in corrections
+
+        # Apply the correction function to the specified column
+        if column_name in self.df.columns:
+            self.df[column_name] = self.df[column_name].apply(correct_crop_type)
+            self.logger.info(f"Applied corrections to '{column_name}' column.")
+        else:
+            self.logger.warning(f"Column '{column_name}' not found in DataFrame.")
 
     def weather_station_mapping(self):
         """
         Fetches weather station mapping data from a CSV file.
 
         Returns:
-            DataFrame: The DataFrame containing the weather station
-            mapping data.
+            DataFrame: The DataFrame containing the weather station mapping data.
         """
-        self.df = read_from_web_CSV(self.weather_map_data)
+        weather_map_df = read_from_web_CSV(self.weather_map_data)
+        self.df = self.df.merge(weather_map_df, on='Field_ID',how='left')
 
     def process(self):
         """
         Executes the data processing pipeline.
 
-        This method sequentially calls all the necessary methods
-        to process the data.
+        This method sequentially calls all the necessary methods to process the data.
         """
         # Step 1: Ingest SQL data
         self.ingest_sql_data()
@@ -146,3 +152,7 @@ class FieldDataProcessor:
 
         # Step 4: Weather station mapping
         self.weather_station_mapping()
+        
+        # Remove any columns with names containing 'Unnamed' followed by any number
+        unnamed_columns = [col for col in self.df.columns if re.match(r'^Unnamed:\s*\d*$', col)]
+        self.df.drop(columns=unnamed_columns, inplace=True)
